@@ -28,11 +28,6 @@ resource "aws_route_table" "main" {
   }
 }
 
-resource "aws_route_table_association" "main" {
-  subnet_id      = aws_subnet.subnet_a.id
-  route_table_id = aws_route_table.main.id
-}
-
 resource "aws_subnet" "subnet_a" {
   vpc_id                  = aws_vpc.main.id
   cidr_block              = "10.0.1.0/24"
@@ -46,6 +41,12 @@ resource "aws_subnet" "subnet_b" {
   availability_zone       = "us-east-1b"
   map_public_ip_on_launch = true
 }
+
+resource "aws_route_table_association" "main" {
+  subnet_id      = aws_subnet.subnet_a.id
+  route_table_id = aws_route_table.main.id
+}
+
 
 resource "aws_security_group" "alb_sg" {
   vpc_id = aws_vpc.main.id
@@ -71,8 +72,8 @@ resource "aws_security_group" "web_sg_instance" {
 
   # Allow traffic from the ALB
   ingress {
-    from_port   = 80
-    to_port     = 80
+    from_port   = 8080
+    to_port     = 8080
     protocol    = "tcp"
     security_groups = [aws_security_group.alb_sg.id]
   }
@@ -181,20 +182,23 @@ resource "aws_iam_instance_profile" "launch_template_profile_role" {
 # Launch Template
 resource "aws_launch_template" "web" {
   name_prefix   = "web-"
-  image_id       = "ami-0583d8c7a9c35822c"  # Replace with a valid AMI ID
+  image_id       = "ami-02c21308fed24a8ab"  # Replace with a valid AMI ID
   instance_type  = "t2.micro"
   key_name        = "newkey"
   user_data = base64encode(<<-EOF
                 #!/bin/bash
                 sudo yum update -y
-                sudo yum install -y httpd
+                sudo yum install httpd -y
                 sudo systemctl start httpd
                 sudo systemctl enable httpd
+                sudo firewall-cmd --permanent --add-service=http
+                sudo firewall-cmd --reload
                 EOF
   )              
   network_interfaces {
     associate_public_ip_address = true
     security_groups = [aws_security_group.web_sg_instance.id]
+    subnet_id = aws_subnet.subnet_a.id
   }
   iam_instance_profile {
     name = aws_iam_instance_profile.launch_template_profile_role.name
@@ -281,7 +285,7 @@ resource "aws_lb_listener" "http" {
 # ALB Target Group
 resource "aws_lb_target_group" "web_tg" {
   name     = "web-tg"
-  port     = 80
+  port     = 8080
   protocol = "HTTP"
   vpc_id   = aws_vpc.main.id
 
@@ -294,15 +298,50 @@ resource "aws_lb_target_group" "web_tg" {
   }
 }
 
-# resource "aws_lb_target_group_attachment" "web_tg_attach" {
-#   target_group_arn = aws_lb_target_group.web_tg.arn
-#   target_id        = aws_autoscaling_group.web_asg.id
-#   port             = 80
-# }
-
 # Auto Scaling Group to ALB Attachment
 resource "aws_autoscaling_attachment" "asg_alb_attachment" {
   autoscaling_group_name = aws_autoscaling_group.web_asg.id
   alb_target_group_arn   = aws_lb_target_group.web_tg.arn
 }
 
+############################# USER ADD ##########################
+resource "aws_iam_user" "web_server_user" {
+  name = "webserver"
+}
+
+# resource "aws_iam_user_login_profile" "web_server_user_profile" {
+#   user    = aws_iam_user.web_server_user.name
+#   #password = "Welcome@1234"  # Set a strong password
+#   password_reset_required = true  # Force the user to reset the password on first login
+# }
+
+# resource "aws_iam_user_login_profile" "console_access_profile" {
+#   user                  = "test-user"  # Replace with the name of your existing IAM user
+#   password_length       = 20
+#   pgp_key = ""
+#   password_reset_required = true
+# }
+
+resource "aws_iam_policy" "web_server_restart_policy" {
+  name        = "web_server_restart_policy"
+  description = "Policy to allow restarting the web server"
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "ec2:StopInstances",
+          "ec2:StartInstances"
+        ],
+        Resource =  aws_launch_template.web.arn # Adjust if necessary
+      }
+    ]
+  })
+}
+
+resource "aws_iam_user_policy_attachment" "web_server_policy_attachment" {
+  policy_arn = aws_iam_policy.web_server_restart_policy.arn
+  user      = aws_iam_user.web_server_user.name
+}
