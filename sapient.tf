@@ -305,6 +305,7 @@ resource "aws_autoscaling_attachment" "asg_alb_attachment" {
 }
 
 ############################# USER ADD ##########################
+############################# USER ADD ##########################
 resource "aws_iam_user" "web_server_user" {
   name = "webserver"
 }
@@ -325,20 +326,30 @@ resource "aws_iam_user" "web_server_user" {
 resource "aws_iam_policy" "web_server_restart_policy" {
   name        = "web_server_restart_policy"
   description = "Policy to allow restarting the web server"
-
   policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [
-      {
-        Effect = "Allow",
-        Action = [
-          "ec2:StopInstances",
-          "ec2:StartInstances"
-        ],
-        Resource =  aws_launch_template.web.arn # Adjust if necessary
-      }
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Action": [
+                "ec2:DescribeInstances"
+            ],
+            "Effect": "Allow",
+            "Resource": "*"
+        },
+        {
+            "Action": [
+                "ec2:RebootInstances"
+            ],
+            "Effect": "Allow",
+            "Resource": "*",
+            "Condition": {
+                "StringEquals": {
+                    "ec2:ResourceTag/Name": "web-server"
+                }
+            }
+        }
     ]
-  })
+})
 }
 
 resource "aws_iam_user_policy_attachment" "web_server_policy_attachment" {
