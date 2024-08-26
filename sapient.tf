@@ -6,17 +6,25 @@ terraform {
     required_providers {
       aws = {
         source  = "hashicorp/aws"
-        version = "~> 3.0"  # Adjust the version as needed
+        version = "~> 3.0"
       }
     }
   }
 
+############################################### NETWORK ##############################################  
+
 resource "aws_vpc" "main" {
   cidr_block = "10.0.0.0/16"
+  tags = {
+    Name = "web-server-vpc"
+  }  
 }
 
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
+  tags = {
+    Name = "web-server-igw"
+  }  
 }
 
 resource "aws_route_table" "main" {
@@ -33,6 +41,9 @@ resource "aws_subnet" "subnet_a" {
   cidr_block              = "10.0.1.0/24"
   availability_zone       = "us-east-1a"
   map_public_ip_on_launch = true
+  tags = {
+    Name = "Subnet-A"
+  }  
 }
 
 resource "aws_subnet" "subnet_b" {
@@ -40,13 +51,17 @@ resource "aws_subnet" "subnet_b" {
   cidr_block              = "10.0.2.0/24"
   availability_zone       = "us-east-1b"
   map_public_ip_on_launch = true
+  tags = {
+    Name = "Subnet-B"
+  }  
 }
 
-resource "aws_route_table_association" "main" {
+resource "aws_route_table_association" "a" {
   subnet_id      = aws_subnet.subnet_a.id
   route_table_id = aws_route_table.main.id
 }
 
+################################################## SECURITY ####################################################
 
 resource "aws_security_group" "alb_sg" {
   vpc_id = aws_vpc.main.id
@@ -64,13 +79,15 @@ resource "aws_security_group" "alb_sg" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
+  tags = {
+    Name = "ALB-SG"
+  }  
 }
 
-# Security Group for Instances
+
 resource "aws_security_group" "web_sg_instance" {
   vpc_id = aws_vpc.main.id
 
-  # Allow traffic from the ALB
   ingress {
     from_port   = 8080
     to_port     = 8080
@@ -91,10 +108,13 @@ resource "aws_security_group" "web_sg_instance" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
+  tags = {
+    Name = "WebServer-SG"
+  }  
 }
 
 resource "aws_iam_role" "role" {
-  name = "webserver-role"
+  name = "WebServer-role"
 
   assume_role_policy = <<EOF
 {
@@ -114,7 +134,7 @@ EOF
 }
 
 resource "aws_iam_policy" "policy" {
-  name        = "webserver-session-manager-policy"
+  name        = "WebServer-Session-Manager-Policy"
   description = "session-manager-policy"
 
   policy = <<EOF
@@ -179,10 +199,11 @@ resource "aws_iam_instance_profile" "launch_template_profile_role" {
   role = aws_iam_role.role.name
 }
 
-# Launch Template
+##################################################### WEBSERVER LAUNCH TEMPLATE ##################################################
+
 resource "aws_launch_template" "web" {
-  name_prefix   = "web-"
-  image_id       = "ami-02c21308fed24a8ab"  # Replace with a valid AMI ID
+  name   = "WebServer-Template"
+  image_id       = "ami-02c21308fed24a8ab"
   instance_type  = "t2.micro"
   key_name        = "newkey"
   user_data = base64encode(<<-EOF
@@ -197,34 +218,34 @@ resource "aws_launch_template" "web" {
   )              
   network_interfaces {
     associate_public_ip_address = true
-    security_groups = [aws_security_group.web_sg_instance.id]
-    subnet_id = aws_subnet.subnet_a.id
+    security_groups             = [aws_security_group.web_sg_instance.id]
+    subnet_id                   = aws_subnet.subnet_a.id
   }
   iam_instance_profile {
     name = aws_iam_instance_profile.launch_template_profile_role.name
   }  
 }
 
-# Auto Scaling Group
+
 resource "aws_autoscaling_group" "web_asg" {
+  name                = "WebServer-ASG"
   launch_template {
     id      = aws_launch_template.web.id
     version = "$Latest"
   }
   min_size             = 1
   max_size             = 3
-  vpc_zone_identifier  = [aws_subnet.subnet_a.id, aws_subnet.subnet_b.id]
+  vpc_zone_identifier  = [aws_subnet.subnet_a.id]
   health_check_type    = "EC2"
   wait_for_capacity_timeout = "0"
   
   tag {
     key                 = "Name"
-    value               = "web-server"
+    value               = "Web-Server"
     propagate_at_launch = true
   }
 }
 
-# Auto Scaling Policies
 resource "aws_autoscaling_policy" "scale_out" {
   name                   = "scale-out"
   scaling_adjustment     = 1
@@ -238,28 +259,9 @@ resource "aws_autoscaling_policy" "scale_in" {
   adjustment_type        = "ChangeInCapacity"
   autoscaling_group_name = aws_autoscaling_group.web_asg.name
 }
-#########################################################
-# resource "aws_security_group" "web_sg_instance_lb" {
-#   vpc_id = aws_vpc.main.id
 
-#   ingress {
-#     from_port   = 80
-#     to_port     = 80
-#     protocol    = "tcp"
-#     cidr_blocks = ["0.0.0.0/0"]
-#   }
-
-#   egress {
-#     from_port   = 0
-#     to_port     = 0
-#     protocol    = "-1"
-#     cidr_blocks = ["0.0.0.0/0"]
-#   }
-# }
-
-# Application Load Balancer
 resource "aws_lb" "web_alb" {
-  name               = "web-alb"
+  name               = "WebServer-ALB"
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb_sg.id]
@@ -271,7 +273,6 @@ resource "aws_lb" "web_alb" {
   drop_invalid_header_fields = true
 }
 
-# ALB Listener
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.web_alb.arn
   port              = 80
@@ -284,7 +285,7 @@ resource "aws_lb_listener" "http" {
 
 # ALB Target Group
 resource "aws_lb_target_group" "web_tg" {
-  name     = "web-tg"
+  name     = "WebServer-TG"
   port     = 8080
   protocol = "HTTP"
   vpc_id   = aws_vpc.main.id
@@ -300,32 +301,18 @@ resource "aws_lb_target_group" "web_tg" {
 
 # Auto Scaling Group to ALB Attachment
 resource "aws_autoscaling_attachment" "asg_alb_attachment" {
-  autoscaling_group_name = aws_autoscaling_group.web_asg.id
-  alb_target_group_arn   = aws_lb_target_group.web_tg.arn
+  autoscaling_group_name      = aws_autoscaling_group.web_asg.id
+  alb_target_group_arn        = aws_lb_target_group.web_tg.arn
 }
 
-############################# USER ADD ##########################
-############################# USER ADD ##########################
+###################################################### USER ADD #######################################################
+
 resource "aws_iam_user" "web_server_user" {
-  name = "webserver"
+  name = "WebServer-USER"
 }
-
-# resource "aws_iam_user_login_profile" "web_server_user_profile" {
-#   user    = aws_iam_user.web_server_user.name
-#   #password = "Welcome@1234"  # Set a strong password
-#   password_reset_required = true  # Force the user to reset the password on first login
-# }
-
-# resource "aws_iam_user_login_profile" "console_access_profile" {
-#   user                  = "test-user"  # Replace with the name of your existing IAM user
-#   password_length       = 20
-#   pgp_key = ""
-#   password_reset_required = true
-# }
 
 resource "aws_iam_policy" "web_server_restart_policy" {
-  name        = "web_server_restart_policy"
-  description = "Policy to allow restarting the web server"
+  name        = "WebServer-restart-policy"
   policy = jsonencode({
     "Version": "2012-10-17",
     "Statement": [
@@ -353,6 +340,6 @@ resource "aws_iam_policy" "web_server_restart_policy" {
 }
 
 resource "aws_iam_user_policy_attachment" "web_server_policy_attachment" {
-  policy_arn = aws_iam_policy.web_server_restart_policy.arn
-  user      = aws_iam_user.web_server_user.name
+  policy_arn        = aws_iam_policy.web_server_restart_policy.arn
+  user              = aws_iam_user.web_server_user.name
 }
